@@ -189,6 +189,41 @@ func TestConvertToOtlpLogStreamV2(t *testing.T) {
 	})
 }
 
+func TestConvertToOtlpLogStream(t *testing.T) {
+	convey.Convey("When converting log groups to otlp protobuf bytes", t, func() {
+		c, err := NewConverter(ProtocolOtlpLogV1, EncodingProtobuf, nil, nil, &config.GlobalConfig{})
+		convey.So(err, convey.ShouldBeNil)
+
+		logGroup := &protocol.LogGroup{
+			LogTags: []*protocol.LogTag{
+				{Key: "__hostname__", Value: "node-a"},
+			},
+			Logs: []*protocol.Log{
+				{
+					Time: 1662434209,
+					Contents: []*protocol.Log_Content{
+						{Key: "content", Value: "hello log group"},
+						{Key: "level", Value: "INFO"},
+					},
+				},
+			},
+		}
+
+		stream, values, err := c.ToByteStreamWithSelectedFields(logGroup, []string{"__hostname__"})
+		convey.So(err, convey.ShouldBeNil)
+		convey.So(stream, convey.ShouldHaveLength, 1)
+		convey.So(values, convey.ShouldHaveLength, 1)
+		convey.So(values[0]["__hostname__"], convey.ShouldEqual, "node-a")
+
+		req := plogotlp.NewExportRequest()
+		err = req.UnmarshalProto(stream.([][]byte)[0])
+		convey.So(err, convey.ShouldBeNil)
+		record := req.Logs().ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(0)
+		convey.So(record.Body().AsString(), convey.ShouldEqual, "hello log group")
+		convey.So(record.SeverityText(), convey.ShouldEqual, "INFO")
+	})
+}
+
 func TestConvertPipelineGroupEventsToOtlpLogs(t *testing.T) {
 	convey.Convey("When constructing converter with supported encoding", t, func() {
 		c, err := NewConverter(ProtocolOtlpV1, EncodingNone, nil, nil, &config.GlobalConfig{})

@@ -204,6 +204,8 @@ func (c *Converter) ToByteStreamWithSelectedFields(logGroup *protocol.LogGroup, 
 		return c.ConvertToInfluxdbProtocolStream(logGroup, targetFields)
 	case ProtocolJsonline:
 		return c.ConvertToJsonlineProtocolStreamFlatten(logGroup)
+	case ProtocolOtlpV1:
+		return c.ConvertToOtlpLogStream(logGroup, targetFields)
 	default:
 		return nil, nil, fmt.Errorf("unsupported protocol: %s", c.Protocol)
 	}

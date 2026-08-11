@@ -103,6 +103,31 @@ func (c *Converter) ConvertToOtlpResourseLogs(logGroup *protocol.LogGroup, targe
 	return rsLogs, desiredValues, nil
 }
 
+func (c *Converter) ConvertToOtlpLogStream(logGroup *protocol.LogGroup, targetFields []string) ([][]byte, []map[string]string, error) {
+	if logGroup == nil || len(logGroup.Logs) == 0 {
+		return nil, nil, nil
+	}
+
+	rsLogs, _, err := c.ConvertToOtlpResourseLogs(logGroup, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	if rsLogs.ScopeLogs().Len() == 0 {
+		return nil, nil, nil
+	}
+
+	payload, err := marshalOtlpResourceLogs(rsLogs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var desiredValue map[string]string
+	if len(targetFields) > 0 {
+		desiredValue = findTargetValuesInLogTags(targetFields, logGroup.LogTags)
+	}
+	return [][]byte{payload}, []map[string]string{desiredValue}, nil
+}
+
 func (c *Converter) ConvertToOtlpLogStreamV2(groupEvents *models.PipelineGroupEvents, targetFields []string) ([][]byte, []map[string]string, error) {
 	if groupEvents == nil || len(groupEvents.Events) == 0 {
 		return nil, nil, nil
@@ -118,12 +143,7 @@ func (c *Converter) ConvertToOtlpLogStreamV2(groupEvents *models.PipelineGroupEv
 		return nil, nil, nil
 	}
 
-	logs := plog.NewLogs()
-	newResource := logs.ResourceLogs().AppendEmpty()
-	rsLogs.MoveTo(newResource)
-
-	request := plogotlp.NewExportRequestFromLogs(logs)
-	payload, err := request.MarshalProto()
+	payload, err := marshalOtlpResourceLogs(rsLogs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -134,6 +154,13 @@ func (c *Converter) ConvertToOtlpLogStreamV2(groupEvents *models.PipelineGroupEv
 	}
 
 	return [][]byte{payload}, []map[string]string{desiredValue}, nil
+}
+
+func marshalOtlpResourceLogs(rsLogs plog.ResourceLogs) ([]byte, error) {
+	logs := plog.NewLogs()
+	newResource := logs.ResourceLogs().AppendEmpty()
+	rsLogs.MoveTo(newResource)
+	return plogotlp.NewExportRequestFromLogs(logs).MarshalProto()
 }
 
 func ConvertPipelineEventToOtlpEvent[
