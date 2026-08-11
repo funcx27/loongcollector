@@ -23,6 +23,7 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
@@ -100,6 +101,39 @@ func (c *Converter) ConvertToOtlpResourseLogs(logGroup *protocol.LogGroup, targe
 	}
 
 	return rsLogs, desiredValues, nil
+}
+
+func (c *Converter) ConvertToOtlpLogStreamV2(groupEvents *models.PipelineGroupEvents, targetFields []string) ([][]byte, []map[string]string, error) {
+	if groupEvents == nil || len(groupEvents.Events) == 0 {
+		return nil, nil, nil
+	}
+
+	rsLogs, _, _, err := ConvertPipelineEventToOtlpEvent[plog.ResourceLogs, pmetric.ResourceMetrics, ptrace.ResourceSpans](c, groupEvents)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	scopeLogs := rsLogs.ScopeLogs()
+	if scopeLogs.Len() == 0 {
+		return nil, nil, nil
+	}
+
+	logs := plog.NewLogs()
+	newResource := logs.ResourceLogs().AppendEmpty()
+	rsLogs.MoveTo(newResource)
+
+	request := plogotlp.NewExportRequestFromLogs(logs)
+	payload, err := request.MarshalProto()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var desiredValue map[string]string
+	if len(targetFields) > 0 {
+		desiredValue = findTargetFieldsInGroup(targetFields, groupEvents.Group)
+	}
+
+	return [][]byte{payload}, []map[string]string{desiredValue}, nil
 }
 
 func ConvertPipelineEventToOtlpEvent[

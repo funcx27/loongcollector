@@ -1,0 +1,159 @@
+name: Build Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version used by make dist and Docker build"
+        required: false
+        default: "3.3.5-otlp"
+  push:
+    branches:
+      - v3.3.5-otlp-kafka-fix
+    paths-ignore:
+      - "changes/**"
+      - "config_server/**"
+      - "docs/**"
+      - "example_config/**"
+      - "k8s_template/**"
+      - "licenses/**"
+      - "test/**"
+      - "tools/**"
+      - "CHANGELOG.md"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.23.12"
+  DEFAULT_VERSION: "3.3.5-otlp"
+
+jobs:
+  build-linux:
+    name: Build Linux ${{ matrix.arch }} package
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          df -hT "$PWD"
+
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 2
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Fetch coolbpf submodule
+        run: |
+          SUBMODULE_PATH="core/_thirdparty/coolbpf"
+          git config submodule.$SUBMODULE_PATH.url "https://github.com/aliyun/coolbpf.git"
+          git submodule update --init
+          cd "$SUBMODULE_PATH"
+          echo "Current commit: $(git rev-parse HEAD)"
+
+      - name: Build package
+        env:
+          VERSION: ${{ inputs.version || env.DEFAULT_VERSION }}
+        run: |
+          make dist
+          ls -la dist/
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: loongcollector-${{ inputs.version || env.DEFAULT_VERSION }}.linux-${{ matrix.arch }}.tar.gz
+          path: dist/loongcollector-${{ inputs.version || env.DEFAULT_VERSION }}.linux-${{ matrix.arch }}.tar.gz
+          retention-days: 1
+
+  build-and-push-image:
+    name: Build and push multi-arch image
+    needs:
+      - build-linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          df -hT "$PWD"
+
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Linux AMD64 package
+        uses: actions/download-artifact@v4
+        with:
+          name: loongcollector-${{ inputs.version || env.DEFAULT_VERSION }}.linux-amd64.tar.gz
+          path: dist/
+
+      - name: Download Linux ARM64 package
+        uses: actions/download-artifact@v4
+        with:
+          name: loongcollector-${{ inputs.version || env.DEFAULT_VERSION }}.linux-arm64.tar.gz
+          path: dist/
+
+      - name: Build and push image
+        env:
+          VERSION: ${{ inputs.version || env.DEFAULT_VERSION }}
+        run: |
+          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${REPO_OWNER}/loongcollector"
+          SHORT_SHA="${GITHUB_SHA::12}"
+          REF_TAG=$(echo "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g' | sed -E 's/^-+|-+$//g')
+
+          echo "Build artifacts:"
+          ls -la dist/
+
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --file docker/Dockerfile_release \
+            --build-arg VERSION="$VERSION" \
+            --build-arg HOST_OS=Linux \
+            --tag "${IMAGE}:${REF_TAG}" \
+            --tag "${IMAGE}:sha-${SHORT_SHA}" \
+            --push .
+
+          echo "Pushed images:"
+          echo "- ${IMAGE}:${REF_TAG}"
+          echo "- ${IMAGE}:sha-${SHORT_SHA}"
